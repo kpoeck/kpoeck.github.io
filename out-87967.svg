@@ -1,0 +1,1629 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="742" onload="init(evt)" viewBox="0 0 1200 742" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="742.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="725" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="725" > </text>
+<g id="frames">
+<g >
+<title>`core::coerce::inputStreamDesignator(gctools::smart_ptr&lt;core::T_ (702 samples, 9.62%)</title><rect x="248.9" y="261" width="113.5" height="15.0" fill="rgb(73,221,73)" rx="2" ry="2" />
+<text  x="251.88" y="271.5" >`core::coerce:..</text>
+</g>
+<g >
+<title>`GC_install_counts (1 samples, 0.01%)</title><rect x="107.7" y="165" width="0.1" height="15.0" fill="rgb(242,111,111)" rx="2" ry="2" />
+<text  x="110.69" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_finish_collection (35 samples, 0.48%)</title><rect x="117.7" y="133" width="5.7" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="120.71" y="143.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_lock_init_slow (1 samples, 0.01%)</title><rect x="464.5" y="117" width="0.1" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="467.47" y="127.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$read$NOCANCEL (1 samples, 0.01%)</title><rect x="465.3" y="165" width="0.1" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text  x="468.28" y="175.5" ></text>
+</g>
+<g >
+<title>`pthread_once (2 samples, 0.03%)</title><rect x="464.8" y="165" width="0.3" height="15.0" fill="rgb(198,198,58)" rx="2" ry="2" />
+<text  x="467.79" y="175.5" ></text>
+</g>
+<g >
+<title>`rand (1 samples, 0.01%)</title><rect x="231.4" y="245" width="0.2" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text  x="234.41" y="255.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$pthread_mutex_lock (5 samples, 0.07%)</title><rect x="428.2" y="197" width="0.8" height="15.0" fill="rgb(209,209,62)" rx="2" ry="2" />
+<text  x="431.24" y="207.5" ></text>
+</g>
+<g >
+<title>`READ-LINE^COMMON-LISP^FN^^ (17 samples, 0.23%)</title><rect x="12.9" y="277" width="2.8" height="15.0" fill="rgb(100,211,211)" rx="2" ry="2" />
+<text  x="15.91" y="287.5" ></text>
+</g>
+<g >
+<title>`GC_start_reclaim (31 samples, 0.42%)</title><rect x="118.2" y="117" width="5.0" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="121.20" y="127.5" ></text>
+</g>
+<g >
+<title>`_fwalk (1 samples, 0.01%)</title><rect x="465.9" y="181" width="0.2" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text  x="468.92" y="191.5" ></text>
+</g>
+<g >
+<title>`core::enter_directory(gctools::smart_ptr&lt;core::Pathname_O&gt;, gct (1 samples, 0.01%)</title><rect x="823.5" y="245" width="0.2" height="15.0" fill="rgb(100,246,100)" rx="2" ry="2" />
+<text  x="826.51" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_remove_protection (2 samples, 0.03%)</title><rect x="108.0" y="165" width="0.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="111.01" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_allochblk (49 samples, 0.67%)</title><rect x="101.4" y="197" width="7.9" height="15.0" fill="rgb(248,120,120)" rx="2" ry="2" />
+<text  x="104.38" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_mark_local (72 samples, 0.99%)</title><rect x="208.9" y="85" width="11.7" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="211.93" y="95.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_unlock_init_slow (3 samples, 0.04%)</title><rect x="477.2" y="197" width="0.5" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text  x="480.25" y="207.5" ></text>
+</g>
+<g >
+<title>`_pthread_start (2,265 samples, 31.04%)</title><rect x="823.7" y="661" width="366.3" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="826.68" y="671.5" >`_pthread_start</text>
+</g>
+<g >
+<title>`gctools::smart_ptr&lt;core::Str8Ns_O&gt; gctools::GCObjectAppropriate (300 samples, 4.11%)</title><rect x="182.9" y="245" width="48.5" height="15.0" fill="rgb(103,248,103)" rx="2" ry="2" />
+<text  x="185.89" y="255.5" >`gct..</text>
+</g>
+<g >
+<title>`main (5,031 samples, 68.96%)</title><rect x="10.0" y="645" width="813.7" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text  x="13.00" y="655.5" >`main</text>
+</g>
+<g >
+<title>`gctools::initializeBoehm(int (*)(int, char**, bool&amp;, int&amp;, int&amp; (5,031 samples, 68.96%)</title><rect x="10.0" y="613" width="813.7" height="15.0" fill="rgb(62,211,62)" rx="2" ry="2" />
+<text  x="13.00" y="623.5" >`gctools::initializeBoehm(int (*)(int, char**, bool&amp;, int&amp;, int&amp;</text>
+</g>
+<g >
+<title>`GC_apply_to_all_blocks (33 samples, 0.45%)</title><rect x="112.4" y="117" width="5.3" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="115.38" y="127.5" ></text>
+</g>
+<g >
+<title>`core::MDArray_O::MDArray_O(core::Rank1, unsigned long, gctools: (3 samples, 0.04%)</title><rect x="228.8" y="229" width="0.5" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="231.82" y="239.5" ></text>
+</g>
+<g >
+<title>`start (5,031 samples, 68.96%)</title><rect x="10.0" y="661" width="813.7" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="13.00" y="671.5" >`start</text>
+</g>
+<g >
+<title>`_platform_memset$VARIANT$Ivybridge (3 samples, 0.04%)</title><rect x="41.2" y="245" width="0.5" height="15.0" fill="rgb(200,200,59)" rx="2" ry="2" />
+<text  x="44.21" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_collect_or_expand (360 samples, 4.93%)</title><rect x="112.4" y="165" width="58.2" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="115.38" y="175.5" >`GC_co..</text>
+</g>
+<g >
+<title>`__psynch_cvwait (1 samples, 0.01%)</title><rect x="1189.4" y="565" width="0.1" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text  x="1192.35" y="575.5" ></text>
+</g>
+<g >
+<title>`core::cl__read_line(gctools::smart_ptr&lt;core::T_O&gt;, gctools::sma (4,917 samples, 67.39%)</title><rect x="17.8" y="277" width="795.2" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="20.76" y="287.5" >`core::cl__read_line(gctools::smart_ptr&lt;core::T_O&gt;, gctools::sma</text>
+</g>
+<g >
+<title>`DYLD-STUB$$__error (14 samples, 0.19%)</title><rect x="424.7" y="197" width="2.2" height="15.0" fill="rgb(224,224,68)" rx="2" ry="2" />
+<text  x="427.68" y="207.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_lock (4 samples, 0.05%)</title><rect x="225.6" y="213" width="0.6" height="15.0" fill="rgb(201,201,59)" rx="2" ry="2" />
+<text  x="228.59" y="223.5" ></text>
+</g>
+<g >
+<title>`CATCH-LAMBDA^CC-GENERATE-AST^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="453" width="813.7" height="15.0" fill="rgb(102,213,213)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >`CATCH-LAMBDA^CC-GENERATE-AST^FN^^</text>
+</g>
+<g >
+<title>`GC_push_contents_hdr (32 samples, 0.44%)</title><rect x="215.2" y="37" width="5.2" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text  x="218.24" y="47.5" ></text>
+</g>
+<g >
+<title>`GC_header_cache_miss (13 samples, 0.18%)</title><rect x="123.5" y="53" width="2.1" height="15.0" fill="rgb(203,55,55)" rx="2" ry="2" />
+<text  x="126.54" y="63.5" ></text>
+</g>
+<g >
+<title>`GC_release_mark_lock (3 samples, 0.04%)</title><rect x="171.4" y="213" width="0.5" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="174.41" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_mark_some (84 samples, 1.15%)</title><rect x="208.9" y="117" width="13.6" height="15.0" fill="rgb(243,112,112)" rx="2" ry="2" />
+<text  x="211.93" y="127.5" ></text>
+</g>
+<g >
+<title>`GC_mark_from (2,105 samples, 28.85%)</title><rect x="844.4" y="565" width="340.4" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="847.38" y="575.5" >`GC_mark_from</text>
+</g>
+<g >
+<title>`0x1 (5,031 samples, 68.96%)</title><rect x="10.0" y="677" width="813.7" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="13.00" y="687.5" >`0x1</text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (15 samples, 0.21%)</title><rect x="226.2" y="229" width="2.5" height="15.0" fill="rgb(187,187,54)" rx="2" ry="2" />
+<text  x="229.24" y="239.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_unlock_init_slow (31 samples, 0.42%)</title><rect x="608.7" y="181" width="5.0" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="611.73" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_notify_all_builder (2 samples, 0.03%)</title><rect x="170.6" y="197" width="0.3" height="15.0" fill="rgb(242,112,112)" rx="2" ry="2" />
+<text  x="173.60" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (1 samples, 0.01%)</title><rect x="204.9" y="85" width="0.1" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="207.89" y="95.5" ></text>
+</g>
+<g >
+<title>`READ-MANY-LINES^COMMON-LISP-USER^FN^^ (5,030 samples, 68.94%)</title><rect x="10.0" y="293" width="813.5" height="15.0" fill="rgb(99,210,210)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >`READ-MANY-LINES^COMMON-LISP-USER^FN^^</text>
+</g>
+<g >
+<title>0x1172cd0fd (5,031 samples, 68.96%)</title><rect x="10.0" y="341" width="813.7" height="15.0" fill="rgb(182,182,52)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >0x1172cd0fd</text>
+</g>
+<g >
+<title>`__cxxabiv1::__si_class_type_info::search_below_dst(__cxxabiv1:: (29 samples, 0.40%)</title><rect x="264.9" y="229" width="4.7" height="15.0" fill="rgb(105,250,105)" rx="2" ry="2" />
+<text  x="267.89" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_add_map_entry (1 samples, 0.01%)</title><rect x="104.1" y="165" width="0.2" height="15.0" fill="rgb(209,63,63)" rx="2" ry="2" />
+<text  x="107.13" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_allocobj (106 samples, 1.45%)</title><rect x="205.4" y="181" width="17.1" height="15.0" fill="rgb(207,61,61)" rx="2" ry="2" />
+<text  x="208.37" y="191.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$__bzero (1 samples, 0.01%)</title><rect x="111.4" y="133" width="0.2" height="15.0" fill="rgb(199,199,59)" rx="2" ry="2" />
+<text  x="114.41" y="143.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="204.9" y="165" width="0.3" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="207.89" y="175.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_unlock (1 samples, 0.01%)</title><rect x="225.1" y="197" width="0.2" height="15.0" fill="rgb(190,190,55)" rx="2" ry="2" />
+<text  x="228.10" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_block_empty (1 samples, 0.01%)</title><rect x="170.3" y="69" width="0.1" height="15.0" fill="rgb(213,70,70)" rx="2" ry="2" />
+<text  x="173.28" y="79.5" ></text>
+</g>
+<g >
+<title>`tlv_get_addr (7 samples, 0.10%)</title><rect x="230.3" y="229" width="1.1" height="15.0" fill="rgb(201,201,59)" rx="2" ry="2" />
+<text  x="233.28" y="239.5" ></text>
+</g>
+<g >
+<title>`_platform_memmove$VARIANT$Nehalem (15 samples, 0.21%)</title><rect x="471.6" y="197" width="2.4" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="474.58" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (2 samples, 0.03%)</title><rect x="117.4" y="85" width="0.3" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="120.39" y="95.5" ></text>
+</g>
+<g >
+<title>`core::cl__pathname(gctools::smart_ptr&lt;core::T_O&gt;) (1 samples, 0.01%)</title><rect x="823.5" y="229" width="0.2" height="15.0" fill="rgb(109,254,109)" rx="2" ry="2" />
+<text  x="826.51" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_malloc_kind (2 samples, 0.03%)</title><rect x="39.9" y="245" width="0.3" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="42.92" y="255.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_droplock (1 samples, 0.01%)</title><rect x="1189.5" y="549" width="0.2" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="1192.51" y="559.5" ></text>
+</g>
+<g >
+<title>`GC_do_local_mark (2 samples, 0.03%)</title><rect x="823.7" y="597" width="0.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="826.68" y="607.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (1 samples, 0.01%)</title><rect x="204.9" y="101" width="0.1" height="15.0" fill="rgb(206,59,59)" rx="2" ry="2" />
+<text  x="207.89" y="111.5" ></text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread (7 samples, 0.10%)</title><rect x="811.9" y="261" width="1.1" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text  x="814.87" y="271.5" ></text>
+</g>
+<g >
+<title>`GC_apply_to_all_blocks (9 samples, 0.12%)</title><rect x="207.5" y="101" width="1.4" height="15.0" fill="rgb(229,93,93)" rx="2" ry="2" />
+<text  x="210.48" y="111.5" ></text>
+</g>
+<g >
+<title>`pthread_cond_broadcast (1 samples, 0.01%)</title><rect x="224.9" y="197" width="0.2" height="15.0" fill="rgb(190,190,55)" rx="2" ry="2" />
+<text  x="227.94" y="207.5" ></text>
+</g>
+<g >
+<title>`CCLASP-EVAL^CLASP-CLEAVIR^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="389" width="813.7" height="15.0" fill="rgb(104,214,214)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >`CCLASP-EVAL^CLASP-CLEAVIR^FN^^</text>
+</g>
+<g >
+<title>`GC_wait_marker (2 samples, 0.03%)</title><rect x="1189.4" y="581" width="0.3" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="1192.35" y="591.5" ></text>
+</g>
+<g >
+<title>`_platform_memmove$VARIANT$Ivybridge (7 samples, 0.10%)</title><rect x="470.5" y="197" width="1.1" height="15.0" fill="rgb(186,186,54)" rx="2" ry="2" />
+<text  x="473.45" y="207.5" ></text>
+</g>
+<g >
+<title>`RUN-SLURP-LINES^COMMON-LISP-USER^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="309" width="813.7" height="15.0" fill="rgb(74,187,187)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >`RUN-SLURP-LINES^COMMON-LISP-USER^FN^^</text>
+</g>
+<g >
+<title>`flockfile (2 samples, 0.03%)</title><rect x="464.3" y="133" width="0.3" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="467.31" y="143.5" ></text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread_low_level (2 samples, 0.03%)</title><rect x="232.5" y="245" width="0.4" height="15.0" fill="rgb(180,180,51)" rx="2" ry="2" />
+<text  x="235.54" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (2 samples, 0.03%)</title><rect x="117.9" y="85" width="0.3" height="15.0" fill="rgb(251,124,124)" rx="2" ry="2" />
+<text  x="120.88" y="95.5" ></text>
+</g>
+<g >
+<title>`GC_mark_some (291 samples, 3.99%)</title><rect x="123.5" y="117" width="47.1" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="126.54" y="127.5" >`GC_..</text>
+</g>
+<g >
+<title>`GC_stopped_mark (84 samples, 1.15%)</title><rect x="208.9" y="133" width="13.6" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="211.93" y="143.5" ></text>
+</g>
+<g >
+<title>`_platform_memmove$VARIANT$Nehalem (17 samples, 0.23%)</title><rect x="467.7" y="181" width="2.8" height="15.0" fill="rgb(224,224,68)" rx="2" ry="2" />
+<text  x="470.70" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_apply_to_all_blocks (12 samples, 0.16%)</title><rect x="205.4" y="117" width="1.9" height="15.0" fill="rgb(212,67,67)" rx="2" ry="2" />
+<text  x="208.37" y="127.5" ></text>
+</g>
+<g >
+<title>`GC_generic_malloc_inner (106 samples, 1.45%)</title><rect x="205.4" y="197" width="17.1" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="208.37" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_push_roots (1 samples, 0.01%)</title><rect x="170.4" y="101" width="0.2" height="15.0" fill="rgb(202,52,52)" rx="2" ry="2" />
+<text  x="173.44" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_malloc_kind (201 samples, 2.75%)</title><rect x="193.7" y="229" width="32.5" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="196.73" y="239.5" >`G..</text>
+</g>
+<g >
+<title>`__cxxabiv1::__si_class_type_info::search_below_dst(__cxxabiv1:: (321 samples, 4.40%)</title><rect x="757.2" y="229" width="51.9" height="15.0" fill="rgb(56,206,56)" rx="2" ry="2" />
+<text  x="760.20" y="239.5" >`__cx..</text>
+</g>
+<g >
+<title>`rand (5 samples, 0.07%)</title><rect x="181.4" y="229" width="0.8" height="15.0" fill="rgb(180,180,52)" rx="2" ry="2" />
+<text  x="184.44" y="239.5" ></text>
+</g>
+<g >
+<title>`TEST^COMMON-LISP-USER^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="325" width="813.7" height="15.0" fill="rgb(104,215,215)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >`TEST^COMMON-LISP-USER^FN^^</text>
+</g>
+<g >
+<title>`GC_reclaim_clear (13 samples, 0.18%)</title><rect x="222.8" y="181" width="2.1" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="225.84" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_finish_collection (10 samples, 0.14%)</title><rect x="207.3" y="133" width="1.6" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="210.31" y="143.5" ></text>
+</g>
+<g >
+<title>`GC_push_contents_hdr (27 samples, 0.37%)</title><rect x="1184.8" y="565" width="4.4" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="1187.82" y="575.5" ></text>
+</g>
+<g >
+<title>`GC_build_fl (17 samples, 0.23%)</title><rect x="202.0" y="197" width="2.7" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="204.98" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_is_black_listed (2 samples, 0.03%)</title><rect x="201.2" y="181" width="0.3" height="15.0" fill="rgb(236,103,103)" rx="2" ry="2" />
+<text  x="204.17" y="191.5" ></text>
+</g>
+<g >
+<title>`core::stream_dispatch_table(gctools::smart_ptr&lt;core::T_O&gt;) (549 samples, 7.52%)</title><rect x="620.5" y="229" width="88.8" height="15.0" fill="rgb(102,247,102)" rx="2" ry="2" />
+<text  x="623.54" y="239.5" >`core::str..</text>
+</g>
+<g >
+<title>`GC_acquire_mark_lock (2 samples, 0.03%)</title><rect x="99.9" y="213" width="0.3" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text  x="102.92" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (1 samples, 0.01%)</title><rect x="123.2" y="101" width="0.2" height="15.0" fill="rgb(223,83,83)" rx="2" ry="2" />
+<text  x="126.21" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_add_to_fl (1 samples, 0.01%)</title><rect x="104.5" y="149" width="0.1" height="15.0" fill="rgb(227,89,89)" rx="2" ry="2" />
+<text  x="107.45" y="159.5" ></text>
+</g>
+<g >
+<title>`CATCH-LAMBDA^CC-GENERATE-AST^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="405" width="813.7" height="15.0" fill="rgb(96,207,207)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >`CATCH-LAMBDA^CC-GENERATE-AST^FN^^</text>
+</g>
+<g >
+<title>`GC_get_first_part (21 samples, 0.29%)</title><rect x="104.3" y="165" width="3.4" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="107.29" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_finalize (3 samples, 0.04%)</title><rect x="117.7" y="117" width="0.5" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="120.71" y="127.5" ></text>
+</g>
+<g >
+<title>`GC_allochblk_nth (14 samples, 0.19%)</title><rect x="198.9" y="181" width="2.3" height="15.0" fill="rgb(205,57,57)" rx="2" ry="2" />
+<text  x="201.90" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_generic_malloc_inner (360 samples, 4.93%)</title><rect x="112.4" y="197" width="58.2" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="115.38" y="207.5" >`GC_ge..</text>
+</g>
+<g >
+<title>`GC_is_marked (1 samples, 0.01%)</title><rect x="207.3" y="101" width="0.2" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="210.31" y="111.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_lock (30 samples, 0.41%)</title><rect x="171.9" y="213" width="4.8" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text  x="174.89" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_acquire_mark_lock (3 samples, 0.04%)</title><rect x="196.5" y="213" width="0.5" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="199.48" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_reclaim_block (22 samples, 0.30%)</title><rect x="119.5" y="85" width="3.6" height="15.0" fill="rgb(220,79,79)" rx="2" ry="2" />
+<text  x="122.49" y="95.5" ></text>
+</g>
+<g >
+<title>`GC_allochblk (1 samples, 0.01%)</title><rect x="197.0" y="213" width="0.1" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="199.96" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_reclaim_block (7 samples, 0.10%)</title><rect x="207.8" y="85" width="1.1" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="210.80" y="95.5" ></text>
+</g>
+<g >
+<title>`TPL^CORE^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="437" width="813.7" height="15.0" fill="rgb(109,219,219)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >`TPL^CORE^FN^^</text>
+</g>
+<g >
+<title>`RUN-ALL/Users/karstenpoeck/lisp/compiler/clasp2/src/lisp/kernel (5,031 samples, 68.96%)</title><rect x="10.0" y="549" width="813.7" height="15.0" fill="rgb(176,176,50)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >`RUN-ALL/Users/karstenpoeck/lisp/compiler/clasp2/src/lisp/kernel</text>
+</g>
+<g >
+<title>`GC_do_parallel_mark (72 samples, 0.99%)</title><rect x="208.9" y="101" width="11.7" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="211.93" y="111.5" ></text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread_low_level (2 samples, 0.03%)</title><rect x="182.2" y="229" width="0.4" height="15.0" fill="rgb(192,192,56)" rx="2" ry="2" />
+<text  x="185.25" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_free_block_ending_at (12 samples, 0.16%)</title><rect x="120.9" y="53" width="2.0" height="15.0" fill="rgb(231,95,95)" rx="2" ry="2" />
+<text  x="123.95" y="63.5" ></text>
+</g>
+<g >
+<title>`_pthread_cond_wait (1 samples, 0.01%)</title><rect x="1189.5" y="565" width="0.2" height="15.0" fill="rgb(216,216,64)" rx="2" ry="2" />
+<text  x="1192.51" y="575.5" ></text>
+</g>
+<g >
+<title>`GC_try_to_collect_inner (106 samples, 1.45%)</title><rect x="205.4" y="149" width="17.1" height="15.0" fill="rgb(213,70,70)" rx="2" ry="2" />
+<text  x="208.37" y="159.5" ></text>
+</g>
+<g >
+<title>`GC_do_local_mark (72 samples, 0.99%)</title><rect x="208.9" y="69" width="11.7" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="211.93" y="79.5" ></text>
+</g>
+<g >
+<title>`__cxxabiv1::__si_class_type_info::search_below_dst(__cxxabiv1:: (32 samples, 0.44%)</title><rect x="726.3" y="245" width="5.2" height="15.0" fill="rgb(90,236,90)" rx="2" ry="2" />
+<text  x="729.31" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_allocobj (360 samples, 4.93%)</title><rect x="112.4" y="181" width="58.2" height="15.0" fill="rgb(212,68,68)" rx="2" ry="2" />
+<text  x="115.38" y="191.5" >`GC_al..</text>
+</g>
+<g >
+<title>`GC_add_to_fl (1 samples, 0.01%)</title><rect x="120.8" y="69" width="0.1" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="123.79" y="79.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (6 samples, 0.08%)</title><rect x="111.4" y="165" width="1.0" height="15.0" fill="rgb(246,118,118)" rx="2" ry="2" />
+<text  x="114.41" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_mark_thread_local_fls_for (1 samples, 0.01%)</title><rect x="170.4" y="69" width="0.2" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="173.44" y="79.5" ></text>
+</g>
+<g >
+<title>`GC_clear_marks (33 samples, 0.45%)</title><rect x="112.4" y="133" width="5.3" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="115.38" y="143.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$_platform_memmove (8 samples, 0.11%)</title><rect x="426.9" y="197" width="1.3" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text  x="429.95" y="207.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$pthread_mutex_unlock (7 samples, 0.10%)</title><rect x="429.0" y="197" width="1.2" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text  x="432.05" y="207.5" ></text>
+</g>
+<g >
+<title>`core::Str8Ns_O::make(unsigned long, unsigned char, bool, gctool (1,213 samples, 16.63%)</title><rect x="36.7" y="261" width="196.2" height="15.0" fill="rgb(82,230,82)" rx="2" ry="2" />
+<text  x="39.69" y="271.5" >`core::Str8Ns_O::make(uns..</text>
+</g>
+<g >
+<title>`GC_push_next_marked_uncollectable (29 samples, 0.40%)</title><rect x="165.7" y="101" width="4.7" height="15.0" fill="rgb(216,74,74)" rx="2" ry="2" />
+<text  x="168.75" y="111.5" ></text>
+</g>
+<g >
+<title>`funlockfile (448 samples, 6.14%)</title><rect x="541.3" y="197" width="72.4" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="544.29" y="207.5" >`funlock..</text>
+</g>
+<g >
+<title>`GC_do_local_mark (2,245 samples, 30.77%)</title><rect x="826.1" y="581" width="363.1" height="15.0" fill="rgb(215,72,72)" rx="2" ry="2" />
+<text  x="829.10" y="591.5" >`GC_do_local_mark</text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread (1 samples, 0.01%)</title><rect x="46.4" y="229" width="0.2" height="15.0" fill="rgb(229,229,69)" rx="2" ry="2" />
+<text  x="49.39" y="239.5" ></text>
+</g>
+<g >
+<title>`_platform_memset$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="228.7" y="229" width="0.1" height="15.0" fill="rgb(195,195,57)" rx="2" ry="2" />
+<text  x="231.66" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_header_cache_miss (45 samples, 0.62%)</title><rect x="142.1" y="37" width="7.3" height="15.0" fill="rgb(247,119,119)" rx="2" ry="2" />
+<text  x="145.14" y="47.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (4 samples, 0.05%)</title><rect x="111.6" y="133" width="0.6" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="114.57" y="143.5" ></text>
+</g>
+<g >
+<title>`GC_mark_from (1 samples, 0.01%)</title><rect x="1189.2" y="581" width="0.2" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="1192.19" y="591.5" ></text>
+</g>
+<g >
+<title>`DO-TIME^CORE^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="357" width="813.7" height="15.0" fill="rgb(74,187,187)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >`DO-TIME^CORE^FN^^</text>
+</g>
+<g >
+<title>`_pthread_mutex_firstfit_unlock_slow (385 samples, 5.28%)</title><rect x="546.5" y="181" width="62.2" height="15.0" fill="rgb(185,185,53)" rx="2" ry="2" />
+<text  x="549.47" y="191.5" >`_pthr..</text>
+</g>
+<g >
+<title>`_pthread_mutex_firstfit_lock_slow (1 samples, 0.01%)</title><rect x="464.3" y="117" width="0.2" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text  x="467.31" y="127.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack (2 samples, 0.03%)</title><rect x="111.1" y="197" width="0.3" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text  x="114.08" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_push_contents_hdr (4 samples, 0.05%)</title><rect x="165.1" y="53" width="0.6" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="168.10" y="63.5" ></text>
+</g>
+<g >
+<title>`core::utf_8_decoder(gctools::smart_ptr&lt;core::T_O&gt;) (2,063 samples, 28.28%)</title><rect x="376.3" y="245" width="333.7" height="15.0" fill="rgb(53,203,53)" rx="2" ry="2" />
+<text  x="379.32" y="255.5" >`core::utf_8_decoder(gctools::smart_ptr&lt;core:..</text>
+</g>
+<g >
+<title>`DYLD-STUB$$__bzero (1 samples, 0.01%)</title><rect x="108.5" y="149" width="0.2" height="15.0" fill="rgb(221,221,66)" rx="2" ry="2" />
+<text  x="111.50" y="159.5" ></text>
+</g>
+<g >
+<title>`setup_header (1 samples, 0.01%)</title><rect x="201.0" y="165" width="0.2" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text  x="204.01" y="175.5" ></text>
+</g>
+<g >
+<title>`core::Str8Ns_O::make(unsigned long, unsigned char, bool, gctool (1 samples, 0.01%)</title><rect x="15.7" y="277" width="0.1" height="15.0" fill="rgb(63,212,63)" rx="2" ry="2" />
+<text  x="18.66" y="287.5" ></text>
+</g>
+<g >
+<title>`cc_invoke_byte_code_interpreter (5,031 samples, 68.96%)</title><rect x="10.0" y="533" width="813.7" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >`cc_invoke_byte_code_interpreter</text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="117.1" y="85" width="0.1" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="120.07" y="95.5" ></text>
+</g>
+<g >
+<title>`wrapped_cl__probe_file_T_sp (1 samples, 0.01%)</title><rect x="823.5" y="293" width="0.2" height="15.0" fill="rgb(219,219,66)" rx="2" ry="2" />
+<text  x="826.51" y="303.5" ></text>
+</g>
+<g >
+<title>`GC_is_marked (2 samples, 0.03%)</title><rect x="117.9" y="101" width="0.3" height="15.0" fill="rgb(226,87,87)" rx="2" ry="2" />
+<text  x="120.88" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_install_counts (1 samples, 0.01%)</title><rect x="109.1" y="181" width="0.2" height="15.0" fill="rgb(219,78,78)" rx="2" ry="2" />
+<text  x="112.14" y="191.5" ></text>
+</g>
+<g >
+<title>`__fread (6 samples, 0.08%)</title><rect x="412.2" y="213" width="1.0" height="15.0" fill="rgb(206,206,61)" rx="2" ry="2" />
+<text  x="415.23" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_clear_hdr_marks (11 samples, 0.15%)</title><rect x="115.4" y="101" width="1.8" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="118.45" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_apply_to_all_blocks (30 samples, 0.41%)</title><rect x="118.2" y="101" width="4.9" height="15.0" fill="rgb(208,61,61)" rx="2" ry="2" />
+<text  x="121.20" y="111.5" ></text>
+</g>
+<g >
+<title>`core::input_stream_read_byte8(gctools::smart_ptr&lt;core::T_O&gt;, un (1,405 samples, 19.26%)</title><rect x="393.3" y="229" width="227.2" height="15.0" fill="rgb(55,205,55)" rx="2" ry="2" />
+<text  x="396.31" y="239.5" >`core::input_stream_read_byte8..</text>
+</g>
+<g >
+<title>`GC_help_marker (2,265 samples, 31.04%)</title><rect x="823.7" y="613" width="366.3" height="15.0" fill="rgb(208,62,62)" rx="2" ry="2" />
+<text  x="826.68" y="623.5" >`GC_help_marker</text>
+</g>
+<g >
+<title>`__dynamic_cast (480 samples, 6.58%)</title><rect x="731.5" y="245" width="77.6" height="15.0" fill="rgb(179,179,51)" rx="2" ry="2" />
+<text  x="734.49" y="255.5" >`__dynam..</text>
+</g>
+<g >
+<title>`_pthread_mutex_firstfit_unlock_slow (6 samples, 0.08%)</title><rect x="475.0" y="197" width="1.0" height="15.0" fill="rgb(193,193,56)" rx="2" ry="2" />
+<text  x="477.98" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_mark_from (244 samples, 3.34%)</title><rect x="125.6" y="53" width="39.5" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="128.64" y="63.5" >`GC..</text>
+</g>
+<g >
+<title>`__cxxabiv1::__si_class_type_info::search_below_dst(__cxxabiv1:: (407 samples, 5.58%)</title><rect x="296.6" y="213" width="65.8" height="15.0" fill="rgb(90,237,90)" rx="2" ry="2" />
+<text  x="299.59" y="223.5" >`__cxxa..</text>
+</g>
+<g >
+<title>`DYLD-STUB$$sigvec__ (13 samples, 0.18%)</title><rect x="430.2" y="197" width="2.1" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text  x="433.18" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_allochblk_nth (3 samples, 0.04%)</title><rect x="201.5" y="197" width="0.5" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="204.49" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_wait_marker (2 samples, 0.03%)</title><rect x="1189.7" y="597" width="0.3" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="1192.68" y="607.5" ></text>
+</g>
+<g >
+<title>`GC_do_parallel_mark (261 samples, 3.58%)</title><rect x="123.5" y="101" width="42.2" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text  x="126.54" y="111.5" >`GC..</text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="112.2" y="149" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="115.21" y="159.5" ></text>
+</g>
+<g >
+<title>`__dynamic_cast (16 samples, 0.22%)</title><rect x="34.1" y="261" width="2.6" height="15.0" fill="rgb(207,207,61)" rx="2" ry="2" />
+<text  x="37.10" y="271.5" ></text>
+</g>
+<g >
+<title>`_pthread_cond_wait (1 samples, 0.01%)</title><rect x="1189.8" y="581" width="0.2" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text  x="1192.84" y="591.5" ></text>
+</g>
+<g >
+<title>`GC_clear_hdr_marks (3 samples, 0.04%)</title><rect x="108.7" y="149" width="0.4" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="111.66" y="159.5" ></text>
+</g>
+<g >
+<title>`GC_build_fl (5 samples, 0.07%)</title><rect x="110.3" y="197" width="0.8" height="15.0" fill="rgb(253,127,127)" rx="2" ry="2" />
+<text  x="113.27" y="207.5" ></text>
+</g>
+<g >
+<title>`__error (69 samples, 0.95%)</title><rect x="432.3" y="197" width="11.1" height="15.0" fill="rgb(194,194,57)" rx="2" ry="2" />
+<text  x="435.28" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_generic_malloc_many (438 samples, 6.00%)</title><rect x="100.4" y="213" width="70.8" height="15.0" fill="rgb(250,124,124)" rx="2" ry="2" />
+<text  x="103.41" y="223.5" >`GC_gene..</text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="112.1" y="117" width="0.1" height="15.0" fill="rgb(221,221,66)" rx="2" ry="2" />
+<text  x="115.05" y="127.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$__dynamic_cast (6 samples, 0.08%)</title><rect x="33.1" y="261" width="1.0" height="15.0" fill="rgb(180,180,52)" rx="2" ry="2" />
+<text  x="36.13" y="271.5" ></text>
+</g>
+<g >
+<title>`fread (4 samples, 0.05%)</title><rect x="709.3" y="229" width="0.7" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="712.33" y="239.5" ></text>
+</g>
+<g >
+<title>`core::lisp_multipleValues() (6 samples, 0.08%)</title><rect x="818.2" y="277" width="0.9" height="15.0" fill="rgb(52,202,52)" rx="2" ry="2" />
+<text  x="821.18" y="287.5" ></text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="204.9" y="53" width="0.1" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text  x="207.89" y="63.5" ></text>
+</g>
+<g >
+<title>`GC_generic_malloc_many (173 samples, 2.37%)</title><rect x="197.3" y="213" width="28.0" height="15.0" fill="rgb(239,108,108)" rx="2" ry="2" />
+<text  x="200.29" y="223.5" >`..</text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (1 samples, 0.01%)</title><rect x="111.6" y="53" width="0.1" height="15.0" fill="rgb(223,84,84)" rx="2" ry="2" />
+<text  x="114.57" y="63.5" ></text>
+</g>
+<g >
+<title>`core::byte_code_interpreter(gctools::GCRootsInModule*, gctools: (5,031 samples, 68.96%)</title><rect x="10.0" y="517" width="813.7" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >`core::byte_code_interpreter(gctools::GCRootsInModule*, gctools:</text>
+</g>
+<g >
+<title>`GC_reclaim_generic (14 samples, 0.19%)</title><rect x="222.7" y="197" width="2.2" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="225.68" y="207.5" ></text>
+</g>
+<g >
+<title>`_fwalk (4 samples, 0.05%)</title><rect x="464.1" y="165" width="0.7" height="15.0" fill="rgb(182,182,52)" rx="2" ry="2" />
+<text  x="467.14" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_reclaim_generic (2 samples, 0.03%)</title><rect x="225.3" y="213" width="0.3" height="15.0" fill="rgb(219,77,77)" rx="2" ry="2" />
+<text  x="228.27" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_install_header (4 samples, 0.05%)</title><rect x="200.2" y="149" width="0.6" height="15.0" fill="rgb(225,87,87)" rx="2" ry="2" />
+<text  x="203.20" y="159.5" ></text>
+</g>
+<g >
+<title>all (7,296 samples, 100%)</title><rect x="10.0" y="693" width="1180.0" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text  x="13.00" y="703.5" ></text>
+</g>
+<g >
+<title>`fread (1,263 samples, 17.31%)</title><rect x="414.7" y="213" width="204.2" height="15.0" fill="rgb(196,196,57)" rx="2" ry="2" />
+<text  x="417.65" y="223.5" >`fread</text>
+</g>
+<g >
+<title>`SIMPLE-EVAL^CLASP-CLEAVIR^FN^^ (5,031 samples, 68.96%)</title><rect x="10.0" y="373" width="813.7" height="15.0" fill="rgb(58,172,172)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >`SIMPLE-EVAL^CLASP-CLEAVIR^FN^^</text>
+</g>
+<g >
+<title>`GC_allochblk_nth (5 samples, 0.07%)</title><rect x="109.3" y="197" width="0.8" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="112.30" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_stopped_mark (291 samples, 3.99%)</title><rect x="123.5" y="133" width="47.1" height="15.0" fill="rgb(227,90,90)" rx="2" ry="2" />
+<text  x="126.54" y="143.5" >`GC_..</text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (21 samples, 0.29%)</title><rect x="176.9" y="229" width="3.4" height="15.0" fill="rgb(224,224,67)" rx="2" ry="2" />
+<text  x="179.91" y="239.5" ></text>
+</g>
+<g >
+<title>`clear_marks_for_block (3 samples, 0.04%)</title><rect x="117.2" y="101" width="0.5" height="15.0" fill="rgb(180,180,52)" rx="2" ry="2" />
+<text  x="120.23" y="111.5" ></text>
+</g>
+<g >
+<title>`core::cl__streamp(gctools::smart_ptr&lt;core::T_O&gt;) (6 samples, 0.08%)</title><rect x="247.9" y="261" width="1.0" height="15.0" fill="rgb(108,253,108)" rx="2" ry="2" />
+<text  x="250.91" y="271.5" ></text>
+</g>
+<g >
+<title>`core::utf_8_decoder(gctools::smart_ptr&lt;core::T_O&gt;) (14 samples, 0.19%)</title><rect x="809.1" y="261" width="2.3" height="15.0" fill="rgb(105,250,105)" rx="2" ry="2" />
+<text  x="812.12" y="271.5" ></text>
+</g>
+<g >
+<title>`rand (4 samples, 0.05%)</title><rect x="229.5" y="229" width="0.6" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text  x="232.47" y="239.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$__dynamic_cast (1 samples, 0.01%)</title><rect x="254.1" y="245" width="0.1" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text  x="257.05" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_push_marked (2 samples, 0.03%)</title><rect x="222.2" y="85" width="0.3" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="225.19" y="95.5" ></text>
+</g>
+<g >
+<title>`GC_allochblk (16 samples, 0.22%)</title><rect x="198.9" y="197" width="2.6" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text  x="201.90" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_clear_hdr_marks (1 samples, 0.01%)</title><rect x="201.0" y="149" width="0.2" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="204.01" y="159.5" ></text>
+</g>
+<g >
+<title>`tlv_get_addr (2 samples, 0.03%)</title><rect x="182.6" y="229" width="0.3" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text  x="185.57" y="239.5" ></text>
+</g>
+<g >
+<title>`gctools::smart_ptr&lt;core::SimpleBaseString_O&gt; gctools::GCObjectA (834 samples, 11.43%)</title><rect x="48.0" y="245" width="134.9" height="15.0" fill="rgb(72,220,72)" rx="2" ry="2" />
+<text  x="51.01" y="255.5" >`gctools::smart_p..</text>
+</g>
+<g >
+<title>`GC_header_cache_miss (5 samples, 0.07%)</title><rect x="214.4" y="37" width="0.8" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="217.43" y="47.5" ></text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="111.9" y="101" width="0.2" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text  x="114.89" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (1 samples, 0.01%)</title><rect x="119.3" y="85" width="0.2" height="15.0" fill="rgb(232,97,97)" rx="2" ry="2" />
+<text  x="122.33" y="95.5" ></text>
+</g>
+<g >
+<title>`GC_noop1 (1 samples, 0.01%)</title><rect x="111.7" y="53" width="0.2" height="15.0" fill="rgb(253,128,128)" rx="2" ry="2" />
+<text  x="114.73" y="63.5" ></text>
+</g>
+<g >
+<title>`GC_allochblk_nth (46 samples, 0.63%)</title><rect x="101.7" y="181" width="7.4" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="104.70" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (6 samples, 0.08%)</title><rect x="111.4" y="197" width="1.0" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text  x="114.41" y="207.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_unlock (9 samples, 0.12%)</title><rect x="617.5" y="197" width="1.4" height="15.0" fill="rgb(195,195,57)" rx="2" ry="2" />
+<text  x="620.47" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_mark_thread_local_free_lists (1 samples, 0.01%)</title><rect x="170.4" y="85" width="0.2" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="173.44" y="95.5" ></text>
+</g>
+<g >
+<title>`lflush (3 samples, 0.04%)</title><rect x="464.3" y="149" width="0.5" height="15.0" fill="rgb(189,189,55)" rx="2" ry="2" />
+<text  x="467.31" y="159.5" ></text>
+</g>
+<g >
+<title>`GC_install_header (18 samples, 0.25%)</title><rect x="104.6" y="149" width="2.9" height="15.0" fill="rgb(202,53,53)" rx="2" ry="2" />
+<text  x="107.61" y="159.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack (1 samples, 0.01%)</title><rect x="197.1" y="213" width="0.2" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="200.12" y="223.5" ></text>
+</g>
+<g >
+<title>`GC_unmap_old (1 samples, 0.01%)</title><rect x="123.2" y="117" width="0.2" height="15.0" fill="rgb(239,107,107)" rx="2" ry="2" />
+<text  x="126.21" y="127.5" ></text>
+</g>
+<g >
+<title>`GC_push_contents_hdr (97 samples, 1.33%)</title><rect x="149.4" y="37" width="15.7" height="15.0" fill="rgb(254,129,129)" rx="2" ry="2" />
+<text  x="152.41" y="47.5" ></text>
+</g>
+<g >
+<title>`flockfile (393 samples, 5.39%)</title><rect x="477.7" y="197" width="63.6" height="15.0" fill="rgb(214,214,64)" rx="2" ry="2" />
+<text  x="480.73" y="207.5" >`flock..</text>
+</g>
+<g >
+<title>`GC_malloc_atomic (4 samples, 0.05%)</title><rect x="39.3" y="245" width="0.6" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="42.27" y="255.5" ></text>
+</g>
+<g >
+<title>`gctools::handle_all_queued_interrupts() (36 samples, 0.49%)</title><rect x="42.2" y="245" width="5.8" height="15.0" fill="rgb(93,240,93)" rx="2" ry="2" />
+<text  x="45.18" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_remove_from_fl_at (1 samples, 0.01%)</title><rect x="107.5" y="149" width="0.2" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="110.52" y="159.5" ></text>
+</g>
+<g >
+<title>`__srefill1 (5 samples, 0.07%)</title><rect x="465.1" y="181" width="0.8" height="15.0" fill="rgb(200,200,59)" rx="2" ry="2" />
+<text  x="468.12" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_mark_from (70 samples, 0.96%)</title><rect x="209.1" y="53" width="11.3" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="212.09" y="63.5" ></text>
+</g>
+<g >
+<title>`core::coerce::inputStreamDesignator(gctools::smart_ptr&lt;core::T_ (17 samples, 0.23%)</title><rect x="813.0" y="277" width="2.8" height="15.0" fill="rgb(102,247,102)" rx="2" ry="2" />
+<text  x="816.00" y="287.5" ></text>
+</g>
+<g >
+<title>`GC_try_to_collect_inner (360 samples, 4.93%)</title><rect x="112.4" y="149" width="58.2" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="115.38" y="159.5" >`GC_tr..</text>
+</g>
+<g >
+<title>`GC_clear_marks (12 samples, 0.16%)</title><rect x="205.4" y="133" width="1.9" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="208.37" y="143.5" ></text>
+</g>
+<g >
+<title>`_platform_memset$VARIANT$Ivybridge (7 samples, 0.10%)</title><rect x="180.3" y="229" width="1.1" height="15.0" fill="rgb(215,215,64)" rx="2" ry="2" />
+<text  x="183.30" y="239.5" ></text>
+</g>
+<g >
+<title>`__dynamic_cast (574 samples, 7.87%)</title><rect x="269.6" y="229" width="92.8" height="15.0" fill="rgb(177,177,50)" rx="2" ry="2" />
+<text  x="272.58" y="239.5" >`__dynamic_..</text>
+</g>
+<g >
+<title>`GC_notify_all_builder (1 samples, 0.01%)</title><rect x="222.5" y="197" width="0.2" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="225.52" y="207.5" ></text>
+</g>
+<g >
+<title>`pthread_getspecific (1 samples, 0.01%)</title><rect x="229.3" y="229" width="0.2" height="15.0" fill="rgb(216,216,65)" rx="2" ry="2" />
+<text  x="232.31" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_reclaim_block (1 samples, 0.01%)</title><rect x="123.1" y="101" width="0.1" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="126.05" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="111.6" y="101" width="0.3" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="114.57" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_remove_from_fl_at (1 samples, 0.01%)</title><rect x="107.8" y="165" width="0.2" height="15.0" fill="rgb(237,104,104)" rx="2" ry="2" />
+<text  x="110.85" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_promote_black_lists (1 samples, 0.01%)</title><rect x="123.4" y="133" width="0.1" height="15.0" fill="rgb(218,76,76)" rx="2" ry="2" />
+<text  x="126.37" y="143.5" ></text>
+</g>
+<g >
+<title>`GC_mark_local (261 samples, 3.58%)</title><rect x="123.5" y="85" width="42.2" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="126.54" y="95.5" >`GC..</text>
+</g>
+<g >
+<title>`gctools::startupGarbageCollectorAndSystem(int (*)(int, char**,  (5,031 samples, 68.96%)</title><rect x="10.0" y="629" width="813.7" height="15.0" fill="rgb(88,235,88)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" >`gctools::startupGarbageCollectorAndSystem(int (*)(int, char**, </text>
+</g>
+<g >
+<title>`GC_clear_hdr_marks (3 samples, 0.04%)</title><rect x="206.8" y="101" width="0.5" height="15.0" fill="rgb(236,102,102)" rx="2" ry="2" />
+<text  x="209.83" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_header_cache_miss (375 samples, 5.14%)</title><rect x="1006.4" y="549" width="60.7" height="15.0" fill="rgb(215,73,73)" rx="2" ry="2" />
+<text  x="1009.43" y="559.5" >`GC_he..</text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="204.9" y="149" width="0.3" height="15.0" fill="rgb(210,64,64)" rx="2" ry="2" />
+<text  x="207.89" y="159.5" ></text>
+</g>
+<g >
+<title>`GC_mark_local (2,261 samples, 30.99%)</title><rect x="824.0" y="597" width="365.7" height="15.0" fill="rgb(214,70,70)" rx="2" ry="2" />
+<text  x="827.00" y="607.5" >`GC_mark_local</text>
+</g>
+<g >
+<title>`GC_get_first_part (4 samples, 0.05%)</title><rect x="200.2" y="165" width="0.6" height="15.0" fill="rgb(240,108,108)" rx="2" ry="2" />
+<text  x="203.20" y="175.5" ></text>
+</g>
+<g >
+<title>`core::stream_dispatch_table(gctools::smart_ptr&lt;core::T_O&gt;) (23 samples, 0.32%)</title><rect x="819.1" y="277" width="3.8" height="15.0" fill="rgb(89,236,89)" rx="2" ry="2" />
+<text  x="822.15" y="287.5" ></text>
+</g>
+<g >
+<title>`core::lisp_multipleValues() (19 samples, 0.26%)</title><rect x="710.0" y="261" width="3.1" height="15.0" fill="rgb(94,240,94)" rx="2" ry="2" />
+<text  x="712.98" y="271.5" ></text>
+</g>
+<g >
+<title>`_platform_memmove$VARIANT$Ivybridge (10 samples, 0.14%)</title><rect x="466.1" y="181" width="1.6" height="15.0" fill="rgb(192,192,56)" rx="2" ry="2" />
+<text  x="469.09" y="191.5" ></text>
+</g>
+<g >
+<title>`__read_nocancel (3 samples, 0.04%)</title><rect x="465.4" y="165" width="0.5" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text  x="468.44" y="175.5" ></text>
+</g>
+<g >
+<title>`get_index (1 samples, 0.01%)</title><rect x="107.7" y="149" width="0.1" height="15.0" fill="rgb(178,178,51)" rx="2" ry="2" />
+<text  x="110.69" y="159.5" ></text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="207.2" y="85" width="0.1" height="15.0" fill="rgb(197,197,58)" rx="2" ry="2" />
+<text  x="210.15" y="95.5" ></text>
+</g>
+<g >
+<title>`GC_push_marked (6 samples, 0.08%)</title><rect x="169.5" y="85" width="0.9" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="172.47" y="95.5" ></text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (1 samples, 0.01%)</title><rect x="205.0" y="133" width="0.2" height="15.0" fill="rgb(228,228,69)" rx="2" ry="2" />
+<text  x="208.05" y="143.5" ></text>
+</g>
+<g >
+<title>`GC_approx_sp (1 samples, 0.01%)</title><rect x="110.1" y="197" width="0.2" height="15.0" fill="rgb(214,71,71)" rx="2" ry="2" />
+<text  x="113.11" y="207.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$__bzero (1 samples, 0.01%)</title><rect x="39.0" y="245" width="0.1" height="15.0" fill="rgb(199,199,58)" rx="2" ry="2" />
+<text  x="41.95" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (2 samples, 0.03%)</title><rect x="169.1" y="85" width="0.4" height="15.0" fill="rgb(247,118,118)" rx="2" ry="2" />
+<text  x="172.14" y="95.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_unlock (2 samples, 0.03%)</title><rect x="170.9" y="197" width="0.3" height="15.0" fill="rgb(181,181,52)" rx="2" ry="2" />
+<text  x="173.92" y="207.5" ></text>
+</g>
+<g >
+<title>`pthread_cond_broadcast (2 samples, 0.03%)</title><rect x="170.6" y="181" width="0.3" height="15.0" fill="rgb(227,227,69)" rx="2" ry="2" />
+<text  x="173.60" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_malloc_kind (498 samples, 6.83%)</title><rect x="96.4" y="229" width="80.5" height="15.0" fill="rgb(204,56,56)" rx="2" ry="2" />
+<text  x="99.37" y="239.5" >`GC_mallo..</text>
+</g>
+<g >
+<title>`core::eformat_read_char(gctools::smart_ptr&lt;core::T_O&gt;) (15 samples, 0.21%)</title><rect x="815.8" y="277" width="2.4" height="15.0" fill="rgb(62,211,62)" rx="2" ry="2" />
+<text  x="818.75" y="287.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_lock_init_slow (8 samples, 0.11%)</title><rect x="476.0" y="197" width="1.2" height="15.0" fill="rgb(215,215,64)" rx="2" ry="2" />
+<text  x="478.95" y="207.5" ></text>
+</g>
+<g >
+<title>`wrapped_cl__read_line_T_spT_spT_spT_sp (4 samples, 0.05%)</title><rect x="822.9" y="277" width="0.6" height="15.0" fill="rgb(229,229,69)" rx="2" ry="2" />
+<text  x="825.87" y="287.5" ></text>
+</g>
+<g >
+<title>`funlockfile (10 samples, 0.14%)</title><rect x="618.9" y="213" width="1.6" height="15.0" fill="rgb(185,185,53)" rx="2" ry="2" />
+<text  x="621.92" y="223.5" ></text>
+</g>
+<g >
+<title>`core::startup_functions_invoke() (5,031 samples, 68.96%)</title><rect x="10.0" y="565" width="813.7" height="15.0" fill="rgb(74,222,74)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >`core::startup_functions_invoke()</text>
+</g>
+<g >
+<title>`DYLD-STUB$$fread (8 samples, 0.11%)</title><rect x="389.9" y="229" width="1.3" height="15.0" fill="rgb(217,217,65)" rx="2" ry="2" />
+<text  x="392.91" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (1 samples, 0.01%)</title><rect x="204.9" y="117" width="0.1" height="15.0" fill="rgb(232,96,96)" rx="2" ry="2" />
+<text  x="207.89" y="127.5" ></text>
+</g>
+<g >
+<title>`GC_remove_header (1 samples, 0.01%)</title><rect x="122.9" y="69" width="0.2" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="125.89" y="79.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_firstfit_lock_slow (303 samples, 4.15%)</title><rect x="483.7" y="181" width="49.0" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text  x="486.71" y="191.5" >`_pt..</text>
+</g>
+<g >
+<title>`pthread_mutex_lock (1 samples, 0.01%)</title><rect x="464.6" y="133" width="0.2" height="15.0" fill="rgb(198,198,58)" rx="2" ry="2" />
+<text  x="467.63" y="143.5" ></text>
+</g>
+<g >
+<title>`core::cl__probe_file(gctools::smart_ptr&lt;core::T_O&gt;) (1 samples, 0.01%)</title><rect x="823.5" y="277" width="0.2" height="15.0" fill="rgb(103,249,103)" rx="2" ry="2" />
+<text  x="826.51" y="287.5" ></text>
+</g>
+<g >
+<title>`startup(int, char**, bool&amp;, int&amp;, int&amp;) (5,031 samples, 68.96%)</title><rect x="10.0" y="597" width="813.7" height="15.0" fill="rgb(211,211,63)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" >`startup(int, char**, bool&amp;, int&amp;, int&amp;)</text>
+</g>
+<g >
+<title>`GC_finalize (1 samples, 0.01%)</title><rect x="207.3" y="117" width="0.2" height="15.0" fill="rgb(226,88,88)" rx="2" ry="2" />
+<text  x="210.31" y="127.5" ></text>
+</g>
+<g >
+<title>`core::cl__streamp(gctools::smart_ptr&lt;core::T_O&gt;) (649 samples, 8.90%)</title><rect x="257.5" y="245" width="104.9" height="15.0" fill="rgb(107,252,107)" rx="2" ry="2" />
+<text  x="260.45" y="255.5" >`core::cl__s..</text>
+</g>
+<g >
+<title>`core::eformat_read_char(gctools::smart_ptr&lt;core::T_O&gt;) (2,149 samples, 29.45%)</title><rect x="362.4" y="261" width="347.6" height="15.0" fill="rgb(72,220,72)" rx="2" ry="2" />
+<text  x="365.42" y="271.5" >`core::eformat_read_char(gctools::smart_ptr&lt;cor..</text>
+</g>
+<g >
+<title>`__fread (167 samples, 2.29%)</title><rect x="443.4" y="197" width="27.1" height="15.0" fill="rgb(185,185,53)" rx="2" ry="2" />
+<text  x="446.44" y="207.5" >`..</text>
+</g>
+<g >
+<title>`GC_mark_thread (2,265 samples, 31.04%)</title><rect x="823.7" y="629" width="366.3" height="15.0" fill="rgb(243,113,113)" rx="2" ry="2" />
+<text  x="826.68" y="639.5" >`GC_mark_thread</text>
+</g>
+<g >
+<title>`ltvc_toplevel_funcall (5,031 samples, 68.96%)</title><rect x="10.0" y="485" width="813.7" height="15.0" fill="rgb(226,226,68)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >`ltvc_toplevel_funcall</text>
+</g>
+<g >
+<title>`_pthread_mutex_firstfit_lock_slow (6 samples, 0.08%)</title><rect x="474.0" y="197" width="1.0" height="15.0" fill="rgb(179,179,51)" rx="2" ry="2" />
+<text  x="477.01" y="207.5" ></text>
+</g>
+<g >
+<title>`core::core__catch_function(gctools::smart_ptr&lt;core::T_O&gt;, gctoo (5,031 samples, 68.96%)</title><rect x="10.0" y="421" width="813.7" height="15.0" fill="rgb(107,253,107)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >`core::core__catch_function(gctools::smart_ptr&lt;core::T_O&gt;, gctoo</text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (1 samples, 0.01%)</title><rect x="204.9" y="133" width="0.1" height="15.0" fill="rgb(218,77,77)" rx="2" ry="2" />
+<text  x="207.89" y="143.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (1 samples, 0.01%)</title><rect x="205.2" y="197" width="0.2" height="15.0" fill="rgb(245,116,116)" rx="2" ry="2" />
+<text  x="208.21" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_start_reclaim (9 samples, 0.12%)</title><rect x="207.5" y="117" width="1.4" height="15.0" fill="rgb(224,85,85)" rx="2" ry="2" />
+<text  x="210.48" y="127.5" ></text>
+</g>
+<g >
+<title>`pthread_cond_broadcast (1 samples, 0.01%)</title><rect x="222.5" y="181" width="0.2" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text  x="225.52" y="191.5" ></text>
+</g>
+<g >
+<title>`__dynamic_cast (20 samples, 0.27%)</title><rect x="254.2" y="245" width="3.3" height="15.0" fill="rgb(212,212,63)" rx="2" ry="2" />
+<text  x="257.22" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_push_next_marked_uncollectable (12 samples, 0.16%)</title><rect x="220.6" y="101" width="1.9" height="15.0" fill="rgb(228,91,91)" rx="2" ry="2" />
+<text  x="223.58" y="111.5" ></text>
+</g>
+<g >
+<title>`GC_push_contents_hdr (1 samples, 0.01%)</title><rect x="220.4" y="53" width="0.2" height="15.0" fill="rgb(248,119,119)" rx="2" ry="2" />
+<text  x="223.41" y="63.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="111.6" y="69" width="0.3" height="15.0" fill="rgb(230,94,94)" rx="2" ry="2" />
+<text  x="114.57" y="79.5" ></text>
+</g>
+<g >
+<title>`GC_end_stubborn_change (1 samples, 0.01%)</title><rect x="193.6" y="229" width="0.1" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="196.57" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="204.9" y="181" width="0.3" height="15.0" fill="rgb(230,93,93)" rx="2" ry="2" />
+<text  x="207.89" y="191.5" ></text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread (6 samples, 0.08%)</title><rect x="231.6" y="245" width="0.9" height="15.0" fill="rgb(182,182,52)" rx="2" ry="2" />
+<text  x="234.57" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_header_cache_miss (1 samples, 0.01%)</title><rect x="208.9" y="53" width="0.2" height="15.0" fill="rgb(200,50,50)" rx="2" ry="2" />
+<text  x="211.93" y="63.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (6 samples, 0.08%)</title><rect x="111.4" y="181" width="1.0" height="15.0" fill="rgb(249,121,121)" rx="2" ry="2" />
+<text  x="114.41" y="191.5" ></text>
+</g>
+<g >
+<title>`GC_set_fl_marks (1 samples, 0.01%)</title><rect x="170.4" y="53" width="0.2" height="15.0" fill="rgb(205,58,58)" rx="2" ry="2" />
+<text  x="173.44" y="63.5" ></text>
+</g>
+<g >
+<title>`GC_find_header (2 samples, 0.03%)</title><rect x="221.9" y="85" width="0.3" height="15.0" fill="rgb(241,110,110)" rx="2" ry="2" />
+<text  x="224.87" y="95.5" ></text>
+</g>
+<g >
+<title>`core::General_O::initialize() (3 samples, 0.04%)</title><rect x="41.7" y="245" width="0.5" height="15.0" fill="rgb(80,228,80)" rx="2" ry="2" />
+<text  x="44.70" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack (1 samples, 0.01%)</title><rect x="100.2" y="213" width="0.2" height="15.0" fill="rgb(250,123,123)" rx="2" ry="2" />
+<text  x="103.25" y="223.5" ></text>
+</g>
+<g >
+<title>`get_index (1 samples, 0.01%)</title><rect x="200.7" y="133" width="0.1" height="15.0" fill="rgb(183,183,52)" rx="2" ry="2" />
+<text  x="203.68" y="143.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_unlock (1 samples, 0.01%)</title><rect x="176.7" y="213" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="179.75" y="223.5" ></text>
+</g>
+<g >
+<title>`__psynch_cvwait (1 samples, 0.01%)</title><rect x="1189.7" y="581" width="0.1" height="15.0" fill="rgb(189,189,55)" rx="2" ry="2" />
+<text  x="1192.68" y="591.5" ></text>
+</g>
+<g >
+<title>`pthread_mutex_lock (23 samples, 0.32%)</title><rect x="613.7" y="197" width="3.8" height="15.0" fill="rgb(182,182,52)" rx="2" ry="2" />
+<text  x="616.75" y="207.5" ></text>
+</g>
+<g >
+<title>`gctools::handle_all_queued_interrupts() (3 samples, 0.04%)</title><rect x="811.4" y="261" width="0.5" height="15.0" fill="rgb(70,218,70)" rx="2" ry="2" />
+<text  x="814.38" y="271.5" ></text>
+</g>
+<g >
+<title>`GC_freehblk (4 samples, 0.05%)</title><rect x="208.3" y="69" width="0.6" height="15.0" fill="rgb(211,67,67)" rx="2" ry="2" />
+<text  x="211.28" y="79.5" ></text>
+</g>
+<g >
+<title>`core::cl__truename(gctools::smart_ptr&lt;core::T_O&gt;) (1 samples, 0.01%)</title><rect x="823.5" y="261" width="0.2" height="15.0" fill="rgb(85,232,85)" rx="2" ry="2" />
+<text  x="826.51" y="271.5" ></text>
+</g>
+<g >
+<title>`flockfile (9 samples, 0.12%)</title><rect x="413.2" y="213" width="1.5" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text  x="416.20" y="223.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$__dynamic_cast (12 samples, 0.16%)</title><rect x="388.0" y="229" width="1.9" height="15.0" fill="rgb(177,177,50)" rx="2" ry="2" />
+<text  x="390.97" y="239.5" ></text>
+</g>
+<g >
+<title>`GC_freehblk (12 samples, 0.16%)</title><rect x="120.9" y="69" width="2.0" height="15.0" fill="rgb(213,69,69)" rx="2" ry="2" />
+<text  x="123.95" y="79.5" ></text>
+</g>
+<g >
+<title>`GC_notify_or_invoke_finalizers (1 samples, 0.01%)</title><rect x="171.2" y="213" width="0.2" height="15.0" fill="rgb(233,98,98)" rx="2" ry="2" />
+<text  x="174.25" y="223.5" ></text>
+</g>
+<g >
+<title>`get_index (1 samples, 0.01%)</title><rect x="107.4" y="133" width="0.1" height="15.0" fill="rgb(180,180,51)" rx="2" ry="2" />
+<text  x="110.36" y="143.5" ></text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread_low_level (1 samples, 0.01%)</title><rect x="230.1" y="229" width="0.2" height="15.0" fill="rgb(222,222,67)" rx="2" ry="2" />
+<text  x="233.12" y="239.5" ></text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (6 samples, 0.08%)</title><rect x="40.2" y="245" width="1.0" height="15.0" fill="rgb(197,197,58)" rx="2" ry="2" />
+<text  x="43.24" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (1 samples, 0.01%)</title><rect x="204.9" y="69" width="0.1" height="15.0" fill="rgb(207,60,60)" rx="2" ry="2" />
+<text  x="207.89" y="79.5" ></text>
+</g>
+<g >
+<title>`core::stream_dispatch_table(gctools::smart_ptr&lt;core::T_O&gt;) (8 samples, 0.11%)</title><rect x="375.0" y="245" width="1.3" height="15.0" fill="rgb(76,224,76)" rx="2" ry="2" />
+<text  x="378.03" y="255.5" ></text>
+</g>
+<g >
+<title>`core::parse_ltvc_toplevel_funcall(gctools::GCRootsInModule*, gc (5,031 samples, 68.96%)</title><rect x="10.0" y="501" width="813.7" height="15.0" fill="rgb(109,254,109)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >`core::parse_ltvc_toplevel_funcall(gctools::GCRootsInModule*, gc</text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="111.6" y="85" width="0.3" height="15.0" fill="rgb(201,51,51)" rx="2" ry="2" />
+<text  x="114.57" y="95.5" ></text>
+</g>
+<g >
+<title>`tlv_get_addr (9 samples, 0.12%)</title><rect x="46.6" y="229" width="1.4" height="15.0" fill="rgb(218,218,65)" rx="2" ry="2" />
+<text  x="49.55" y="239.5" ></text>
+</g>
+<g >
+<title>`get_index (1 samples, 0.01%)</title><rect x="200.8" y="165" width="0.2" height="15.0" fill="rgb(175,175,50)" rx="2" ry="2" />
+<text  x="203.84" y="175.5" ></text>
+</g>
+<g >
+<title>`__dynamic_cast (13 samples, 0.18%)</title><rect x="391.2" y="229" width="2.1" height="15.0" fill="rgb(187,187,54)" rx="2" ry="2" />
+<text  x="394.20" y="239.5" ></text>
+</g>
+<g >
+<title>`DYLD-STUB$$memset (1 samples, 0.01%)</title><rect x="39.1" y="245" width="0.2" height="15.0" fill="rgb(203,203,60)" rx="2" ry="2" />
+<text  x="42.11" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack (1 samples, 0.01%)</title><rect x="204.7" y="197" width="0.2" height="15.0" fill="rgb(222,82,82)" rx="2" ry="2" />
+<text  x="207.73" y="207.5" ></text>
+</g>
+<g >
+<title>`core::stream_dispatch_table(gctools::smart_ptr&lt;core::T_O&gt;) (594 samples, 8.14%)</title><rect x="713.1" y="261" width="96.0" height="15.0" fill="rgb(105,250,105)" rx="2" ry="2" />
+<text  x="716.05" y="271.5" >`core::stre..</text>
+</g>
+<g >
+<title>`setup_header (5 samples, 0.07%)</title><rect x="108.3" y="165" width="0.8" height="15.0" fill="rgb(191,191,56)" rx="2" ry="2" />
+<text  x="111.33" y="175.5" ></text>
+</g>
+<g >
+<title>`tlv_get_addr (12 samples, 0.16%)</title><rect x="711.1" y="245" width="2.0" height="15.0" fill="rgb(188,188,54)" rx="2" ry="2" />
+<text  x="714.11" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_header_cache_miss (110 samples, 1.51%)</title><rect x="826.6" y="565" width="17.8" height="15.0" fill="rgb(228,90,90)" rx="2" ry="2" />
+<text  x="829.59" y="575.5" ></text>
+</g>
+<g >
+<title>`__dynamic_cast (477 samples, 6.54%)</title><rect x="632.2" y="213" width="77.1" height="15.0" fill="rgb(207,207,61)" rx="2" ry="2" />
+<text  x="635.18" y="223.5" >`__dynam..</text>
+</g>
+<g >
+<title>`core::core__catch_function(gctools::smart_ptr&lt;core::T_O&gt;, gctoo (5,031 samples, 68.96%)</title><rect x="10.0" y="469" width="813.7" height="15.0" fill="rgb(89,235,89)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" >`core::core__catch_function(gctools::smart_ptr&lt;core::T_O&gt;, gctoo</text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (2 samples, 0.03%)</title><rect x="204.9" y="197" width="0.3" height="15.0" fill="rgb(235,101,101)" rx="2" ry="2" />
+<text  x="207.89" y="207.5" ></text>
+</g>
+<g >
+<title>`GC_free_block_ending_at (4 samples, 0.05%)</title><rect x="208.3" y="53" width="0.6" height="15.0" fill="rgb(238,105,105)" rx="2" ry="2" />
+<text  x="211.28" y="63.5" ></text>
+</g>
+<g >
+<title>`_platform_bzero$VARIANT$Ivybridge (15 samples, 0.21%)</title><rect x="202.3" y="181" width="2.4" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text  x="205.30" y="191.5" ></text>
+</g>
+<g >
+<title>`core::Str8Ns_O::vectorPushExtend_claspChar(unsigned char, unsig (12 samples, 0.16%)</title><rect x="15.8" y="277" width="2.0" height="15.0" fill="rgb(83,230,83)" rx="2" ry="2" />
+<text  x="18.82" y="287.5" ></text>
+</g>
+<g >
+<title>`_pthread_mutex_lock_init_slow (53 samples, 0.73%)</title><rect x="532.7" y="181" width="8.6" height="15.0" fill="rgb(184,184,53)" rx="2" ry="2" />
+<text  x="535.72" y="191.5" ></text>
+</g>
+<g >
+<title>`core::input_stream_read_byte8(gctools::smart_ptr&lt;core::T_O&gt;, un (4 samples, 0.05%)</title><rect x="374.4" y="245" width="0.6" height="15.0" fill="rgb(95,241,95)" rx="2" ry="2" />
+<text  x="377.38" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_collect_or_expand (106 samples, 1.45%)</title><rect x="205.4" y="165" width="17.1" height="15.0" fill="rgb(234,100,100)" rx="2" ry="2" />
+<text  x="208.37" y="175.5" ></text>
+</g>
+<g >
+<title>`GC_do_local_mark (261 samples, 3.58%)</title><rect x="123.5" y="69" width="42.2" height="15.0" fill="rgb(244,114,114)" rx="2" ry="2" />
+<text  x="126.54" y="79.5" >`GC..</text>
+</g>
+<g >
+<title>`__cxxabiv1::__si_class_type_info::search_below_dst(__cxxabiv1:: (297 samples, 4.07%)</title><rect x="661.3" y="197" width="48.0" height="15.0" fill="rgb(60,209,60)" rx="2" ry="2" />
+<text  x="664.30" y="207.5" >`__c..</text>
+</g>
+<g >
+<title>`thread-local wrapper routine for my_thread (1 samples, 0.01%)</title><rect x="710.9" y="245" width="0.2" height="15.0" fill="rgb(225,225,68)" rx="2" ry="2" />
+<text  x="713.95" y="255.5" ></text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (5 samples, 0.07%)</title><rect x="111.4" y="149" width="0.8" height="15.0" fill="rgb(225,86,86)" rx="2" ry="2" />
+<text  x="114.41" y="159.5" ></text>
+</g>
+<g >
+<title>`__srefill0 (6 samples, 0.08%)</title><rect x="464.1" y="181" width="1.0" height="15.0" fill="rgb(204,204,60)" rx="2" ry="2" />
+<text  x="467.14" y="191.5" ></text>
+</g>
+<g >
+<title>`core::Str8Ns_O::vectorPushExtend_claspChar(unsigned char, unsig (93 samples, 1.27%)</title><rect x="232.9" y="261" width="15.0" height="15.0" fill="rgb(98,244,98)" rx="2" ry="2" />
+<text  x="235.87" y="271.5" ></text>
+</g>
+<g >
+<title>`GC_push_contents_hdr (728 samples, 9.98%)</title><rect x="1067.1" y="549" width="117.7" height="15.0" fill="rgb(220,80,80)" rx="2" ry="2" />
+<text  x="1070.08" y="559.5" >`GC_push_conte..</text>
+</g>
+<g >
+<title>`_pthread_body (2,265 samples, 31.04%)</title><rect x="823.7" y="645" width="366.3" height="15.0" fill="rgb(223,223,67)" rx="2" ry="2" />
+<text  x="826.68" y="655.5" >`_pthread_body</text>
+</g>
+<g >
+<title>`GC_clear_stack_inner (3 samples, 0.04%)</title><rect x="111.6" y="117" width="0.5" height="15.0" fill="rgb(217,75,75)" rx="2" ry="2" />
+<text  x="114.57" y="127.5" ></text>
+</g>
+<g >
+<title>`thread_start (2,265 samples, 31.04%)</title><rect x="823.7" y="677" width="366.3" height="15.0" fill="rgb(229,229,69)" rx="2" ry="2" />
+<text  x="826.68" y="687.5" >`thread_start</text>
+</g>
+<g >
+<title>`core::Lisp_O::run() (5,031 samples, 68.96%)</title><rect x="10.0" y="581" width="813.7" height="15.0" fill="rgb(52,201,52)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >`core::Lisp_O::run()</text>
+</g>
+<g >
+<title>`DYLD-STUB$$GC_malloc (1 samples, 0.01%)</title><rect x="38.8" y="245" width="0.2" height="15.0" fill="rgb(225,225,68)" rx="2" ry="2" />
+<text  x="41.79" y="255.5" ></text>
+</g>
+<g >
+<title>`__cxxabiv1::__si_class_type_info::search_below_dst(__cxxabiv1:: (23 samples, 0.32%)</title><rect x="628.5" y="213" width="3.7" height="15.0" fill="rgb(55,205,55)" rx="2" ry="2" />
+<text  x="631.46" y="223.5" ></text>
+</g>
+</g>
+</svg>
