@@ -1,0 +1,38 @@
+                                                                         Cons
+                                           %     %                       Per      Total   Total
+Function                                   Time  Cons  Calls  Sec/Call   Call     Time    Cons
+------------------------------------------------------------------------------------------------
+CLEAVIR-CST-TO-AST:CST-TO-AST:             0.28  0.27   1196  0.003737  239386  4.469473  286305264
+COMPILER:OPTIMIZE-MODULE-FOR-COMPILE-FILE: 0.22  0.00      1  3.515667    336  3.515667     336
+CLASP-CLEAVIR::HOIST-AST:                  0.21  0.10   1044  0.003256  96430  3.399354  100673072
+CLASP-CLEAVIR::HIR->MIR:                   0.13  0.31   1044  0.002011  314008  2.099976  327824248
+CLASP-CLEAVIR::TRANSLATE:                  0.10  0.14   1044  0.001583  142815  1.652632  149098856
+CLASP-CLEAVIR::AST->HIR:                   0.06  0.17   1044  0.000891  175474  0.930047  183195304
+ECLECTOR.CONCRETE-SYNTAX-TREE:CST-READ:    0.01  0.01     60  0.002280  157349  0.136793  9440928
+------------------------------------------------------------------------------------------------
+TOTAL:                                     1.00  1.00   5433                   16.203943  1056538008
+Estimated monitoring overhead: 0.02 seconds
+Estimated total monitoring overhead: 0.02 seconds
+
+(mon:with-monitoring (#+no CLEAVIR-PRIMOP:CALL-WITH-VARIABLE-BOUND
+                           #+no CLEAVIR-IR:MAP-INSTRUCTIONS-ARBITRARY-ORDER
+                           #+no CLEAVIR-IR:MAP-INSTRUCTIONS-WITH-OWNER
+                           cmp:optimize-module-for-compile-file
+                           #+no CLASP-CLEAVIR::CCLASP-LOOP-READ-AND-COMPILE-FILE-FORMS
+                           eclector.concrete-syntax-tree:cst-read
+                           #+no CLASP-CLEAVIR::CLEAVIR-COMPILE-FILE-CST
+                           #+no CLASP-CLEAVIR::CST->AST
+                           cleavir-cst-to-ast:cst-to-ast
+                           #+no CLASP-CLEAVIR::TRANSLATE-AST
+                           CLASP-CLEAVIR::hoist-ast
+                           #+no CLASP-CLEAVIR::translate-hoisted-ast
+                           CLASP-CLEAVIR::AST->HIR
+                           CLASP-CLEAVIR::HIR->MIR
+                           CLASP-CLEAVIR::translate
+                           #+no COMPILER::IRC-VERIFY-MODULE
+                           COMPILER:QUICK-MODULE-DUMP
+                           COMPILER:MAKE-BOOT-FUNCTION-GLOBAL-VARIABLE
+                           COMPILER:QUICK-MODULE-DUMP
+                       )
+   (:exclusive 0.0001)
+   (time (compile-file "/Users/karstenpoeck/quicklisp/local-projects/fork-metering/metering.cl")))
